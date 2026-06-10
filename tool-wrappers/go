@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# go wrapper → go container. Same model as pdflatex / marp / pandoc.
+# This is the exact symmetry the architecture aims for : texlive
+# isn't privileged ; it's just one tool image among several.
+set -euo pipefail
+exec crun exec --cwd "$PWD" go go "$@"

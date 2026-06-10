@@ -1,0 +1,72 @@
+# weft-loom-workspace build + publish workflow. Tag-gated (no
+# autopublish on push:main per the openweft policy).
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_version:
+        description: 'weft-microvm-agent version (e.g. v0.4.0)'
+        required: true
+        default: 'v0.4.0'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve versions
+        id: vers
+        run: |
+          IMAGE_TAG="${GITHUB_REF#refs/tags/}"
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "$GITHUB_REF" ]; then
+            IMAGE_TAG="dev-$(echo "${GITHUB_SHA:0:7}")"
+          fi
+          AGENT_VERSION="${{ inputs.agent_version }}"
+          [ -z "$AGENT_VERSION" ] && AGENT_VERSION="$IMAGE_TAG"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "agent_version=$AGENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download agent + ncl binaries (4 archs)
+        run: |
+          mkdir -p binaries
+          for ARCH in amd64 arm64 riscv64 loong64; do
+            curl -fSL -o "binaries/weft-microvm-agent.${ARCH}" \
+              "https://github.com/openweft/weft-microvm-agent/releases/download/${{ steps.vers.outputs.agent_version }}/weft-microvm-agent_linux_${ARCH}"
+            curl -fSL -o "binaries/ncl.${ARCH}" \
+              "https://github.com/openweft/weft-microvm-init/releases/download/${{ steps.vers.outputs.agent_version }}/ncl_linux_${ARCH}"
+          done
+          chmod +x binaries/*
+
+      - name: Set up QEMU (binfmt)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/riscv64,linux/loong64
+          push: true
+          build-args: |
+            AGENT_VERSION=${{ steps.vers.outputs.agent_version }}
+          tags: |
+            ghcr.io/openweft/weft-loom-workspace:${{ steps.vers.outputs.image_tag }}
+            ghcr.io/openweft/weft-loom-workspace:latest

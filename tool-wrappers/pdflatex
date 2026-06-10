@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# pdflatex wrapper — runs the real binary inside the texlive
+# container the workspace agent keeps warm. The user types
+# `pdflatex main.tex` ; this script becomes
+# `crun exec texlive pdflatex main.tex` with the CWD preserved.
+#
+# Why a wrapper instead of dropping pdflatex straight into the
+# workspace rootfs : texlive is ~5 GiB and most users don't run
+# pdflatex every session. Keeping it in its own OCI image lets
+# weft-microvm-agent's containers reconciler swap it in / out
+# based on file activity ; users without .tex files in their
+# project never carry that weight.
+set -euo pipefail
+
+CONTAINER=texlive
+exec crun exec --cwd "$PWD" "$CONTAINER" pdflatex "$@"

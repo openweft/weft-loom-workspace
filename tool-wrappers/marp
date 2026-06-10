@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# marp wrapper → markdown container. See pdflatex for the rationale.
+set -euo pipefail
+exec crun exec --cwd "$PWD" markdown marp "$@"
