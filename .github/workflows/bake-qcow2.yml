@@ -1,0 +1,141 @@
+# weft-loom-workspace — bake the published OCI rootfs into a bootable
+# qcow2 that QEMU's `-drive file=...,if=virtio` consumes directly.
+#
+# Triggers on the same `v*` tag + workflow_dispatch as build.yml.
+# Runs *after* build.yml (waits via the workflow_run trigger so the
+# OCI image is already on GHCR when we pull it) — keeps the qcow2
+# bake strictly additive : build.yml is unchanged and tag pushes still
+# publish the OCI image regardless of whether this one passes.
+#
+# Multi-arch fan-out (amd64 / arm64 / riscv64 / loong64) per the
+# openweft infra-images-4arch directive.
+#
+# Outputs :
+#   - weft-loom-workspace-<arch>.qcow2 as a GitHub Release asset
+#   - ghcr.io/openweft/weft-loom-workspace-base:<tag> OCI artifact
+#     (mediatype application/vnd.openweft.workspace.qcow2.image)
+#
+# Copyright (c) openweft contributors. BSD 3-Clause.
+name: bake-qcow2
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'OCI image tag to bake from (e.g. v0.5.1)'
+        required: true
+        default: 'latest'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # for the Release asset upload
+  packages: write   # for the GHCR push of the base qcow2 artifact
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64, riscv64, loong64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve tag
+        id: vers
+        run: |
+          IMAGE_TAG="${GITHUB_REF#refs/tags/}"
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "$GITHUB_REF" ]; then
+            IMAGE_TAG="${{ inputs.image_tag }}"
+          fi
+          [ -z "$IMAGE_TAG" ] && IMAGE_TAG="latest"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install libguestfs + skopeo + qemu-utils
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libguestfs-tools qemu-utils skopeo
+          # libguestfs on ubuntu-latest needs /boot/vmlinuz-* readable
+          # by non-root for the appliance to boot under guestfish ;
+          # the standard workaround is to chmod the running kernel.
+          sudo chmod +r /boot/vmlinuz-* || true
+
+      - name: Login to GHCR (skopeo + crane)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Bake qcow2 for ${{ matrix.arch }}
+        env:
+          IMAGE_REF: ghcr.io/openweft/weft-loom-workspace:${{ steps.vers.outputs.image_tag }}
+          IMAGE_ARCH: ${{ matrix.arch }}
+          OUT_DIR: ${{ github.workspace }}/dist
+        run: |
+          chmod +x bake-qcow2.sh
+          ./bake-qcow2.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: weft-loom-workspace-${{ matrix.arch }}-qcow2
+          path: dist/weft-loom-workspace-${{ matrix.arch }}.qcow2
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/weft-loom-workspace-${{ matrix.arch }}.qcow2
+          fail_on_unmatched_files: true
+
+      - name: Push as OCI artifact (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # oras push the qcow2 with the openweft workspace mediatype
+          # so the loom-server QEMUProvisioner can pull it by digest.
+          curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin oras
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          oras push \
+            "ghcr.io/openweft/weft-loom-workspace-base:${{ steps.vers.outputs.image_tag }}-${{ matrix.arch }}" \
+            --artifact-type application/vnd.openweft.workspace.qcow2.image \
+            "dist/weft-loom-workspace-${{ matrix.arch }}.qcow2:application/vnd.openweft.workspace.qcow2.image"
+
+  # Aggregate per-arch oras pushes into a single multi-arch index tag
+  # so consumers can pull `weft-loom-workspace-base:<tag>` and let oras
+  # pick the right platform variant. Mirror of the docker manifest
+  # pattern, applied to the artifact mediatype.
+  index:
+    needs: bake
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: vers
+        run: |
+          IMAGE_TAG="${GITHUB_REF#refs/tags/}"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install oras
+        run: |
+          curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin oras
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build per-arch index
+        run: |
+          TAG="${{ steps.vers.outputs.image_tag }}"
+          oras manifest index create \
+            "ghcr.io/openweft/weft-loom-workspace-base:${TAG}" \
+            "ghcr.io/openweft/weft-loom-workspace-base:${TAG}-amd64" \
+            "ghcr.io/openweft/weft-loom-workspace-base:${TAG}-arm64" \
+            "ghcr.io/openweft/weft-loom-workspace-base:${TAG}-riscv64" \
+            "ghcr.io/openweft/weft-loom-workspace-base:${TAG}-loong64"
