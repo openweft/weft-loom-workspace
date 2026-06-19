@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# go wrapper → go container. Same model as pdflatex / marp / pandoc.
-# This is the exact symmetry the architecture aims for : texlive
-# isn't privileged ; it's just one tool image among several.
+# go wrapper → golang container. Symmetric to pdflatex / marp / pandoc.
+# Matches ghcr.io/openweft/weft-loom-golang (note repo name disambiguates
+# from a literal `go` binary).
 set -euo pipefail
-exec crun exec --cwd "$PWD" go go "$@"
+exec crun exec --cwd "$PWD" golang go "$@"
