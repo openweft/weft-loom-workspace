@@ -11,8 +11,17 @@
 #                   release ; the image tag tracks the agent tag
 #                   1:1 so a `v0.4.2` image matches `v0.4.2` agent.
 #
-# Multi-arch via buildx + qemu-binfmt (4 archs : amd64, arm64,
-# riscv64, loong64) per the openweft infra-images-4arch directive.
+# Multi-arch via buildx + qemu-binfmt : amd64, arm64, riscv64 — NOT
+# loong64, despite the openweft infra-images-4arch directive, because
+# this rootfs's final stage is a REAL alpine userland (bash, crun,
+# fuse-overlayfs, tini — not a static-binary-only image), and the
+# official alpine image publishes no linux/loong64 manifest at all
+# (verified via `docker manifest inspect alpine:3.22`). Unlike a
+# scratch-based tool image (weft-router, weft-network, …), there is no
+# build stage to pin to --platform=$BUILDPLATFORM here that would
+# sidestep the problem — the alpine base itself IS the shipped
+# content, on every target platform. Revisit if/when Alpine ships a
+# loong64 variant.
 
 ARG AGENT_VERSION=v0.4.0
 ARG ALPINE_VERSION=3.20
