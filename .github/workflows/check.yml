@@ -1,0 +1,46 @@
+# A check, separate from build.yml, which publishes.
+#
+# build.yml is tag-gated and holds `packages: write`; giving it a
+# `pull_request` trigger would let a pull request publish. So the checks live
+# here, with no write permission at all, and this is the workflow that gives a
+# pull request in this repository something to be judged on -- it had none, and
+# #1 sat unjudgeable because of it.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  platforms:
+    name: the base image publishes every platform we claim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # PROVES: every platform build.yml passes to buildx exists in the
+      # manifest list of the image the final stage rests on. buildx would
+      # find this out too, but only during a tag-gated publish, long after
+      # the branch that introduced the claim merged. linux/loong64 sat in
+      # this workflow that way until #1.
+      #
+      # It asks the registry rather than running docker, so there is no
+      # daemon, no qemu and no privilege involved.
+      - name: check platforms against the base image
+        run: python3 scripts/check_platforms.py
+
+  dockerfile:
+    name: hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
